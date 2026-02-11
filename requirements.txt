@@ -1,0 +1,15 @@
+# 크롤링
+beautifulsoup4==4.12.3
+selenium==4.18.1
+requests==2.31.0
+webdriver-manager==4.0.1
+
+# 데이터 처리
+pandas==2.2.0
+numpy==1.26.3
+
+# Supabase
+supabase==2.3.4
+
+# 유틸리티
+python-dotenv==1.0.1

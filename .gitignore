@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# 환경 변수
+.env
+.env.local
+
+# 로그 파일
+*.log
+logs/
+crawling_*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# 크롤링 임시 파일
+*.html
+*.json
+temp/
+cache/
+
+# 데이터베이스 로컬 백업
+*.db
+*.sqlite
+
+# OS
+Thumbs.db
+.DS_Store
