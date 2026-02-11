@@ -1,133 +1,78 @@
 """
 크롤링 파이프라인 메인 실행 파일
 """
-
 import logging
 import pandas as pd
 from datetime import datetime
+import sys
 
 from .config import CrawlingConfig
 from .cleansing import LoanDataCleaner
 from .supabase_client import SupabaseManager
 from .bank_crawlers.kb_crawler import KBCrawler
-# TODO: 다른 은행 크롤러 추가
-# from .bank_crawlers.shinhan_crawler import ShinhanCrawler
-# from .bank_crawlers.hana_crawler import HanaCrawler
-# from .bank_crawlers.woori_crawler import WooriCrawler
-# from .bank_crawlers.nh_crawler import NHCrawler
 
-# 로깅 설정
+# 로깅 설정 최적화
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     handlers=[
         logging.FileHandler(f'crawling_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
-        logging.StreamHandler()
+        logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
 
 def main():
-    """크롤링 메인 실행 함수"""
-    
     logger.info("=" * 60)
-    logger.info("대출 상품 크롤링 시작")
-    logger.info(f"실행 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("🚀 대출 상품 실시간 수집 프로세스 시작")
     logger.info("=" * 60)
     
-    # 1. Supabase 클라이언트 초기화
+    # 1. DB 연결
     try:
         supabase = SupabaseManager()
+        logger.info("✅ Supabase 클라이언트 연결 성공")
     except Exception as e:
-        logger.error(f"Supabase 연결 실패: {e}")
-        logger.error("환경 변수(.env) 파일을 확인하세요.")
+        logger.error(f"❌ Supabase 연결 실패: {e}")
         return
     
-    # 2. 크롤러 목록
-    crawlers = [
-        KBCrawler(),
-        # TODO: 다른 은행 크롤러 추가
-        # ShinhanCrawler(),
-        # HanaCrawler(),
-        # WooriCrawler(),
-        # NHCrawler(),
-    ]
-    
-    # 3. 전체 크롤링 결과 저장
+    # 2. 크롤러 목록 (KB만 우선 실행)
+    crawlers = [KBCrawler()]
     all_products = []
     
-    # 4. 각 은행별 크롤링 실행
+    # 3. 크롤링 수행
     for crawler in crawlers:
-        logger.info(f"\n{'='*60}")
-        logger.info(f"{crawler.bank_name} 크롤링 시작")
-        logger.info(f"{'='*60}")
-        
         try:
-            # 크롤링 실행
+            logger.info(f"\n👉 {crawler.bank_name} 크롤링 작업을 시작합니다.")
             products = crawler.safe_crawl()
             
             if products:
                 all_products.extend(products)
-                
-                # 성공 로그 기록
-                supabase.log_crawling_result(
-                    bank_name=crawler.bank_name,
-                    status='success',
-                    crawled_count=len(products)
-                )
+                logger.info(f"✨ {crawler.bank_name} 수집 완료: {len(products)}건")
+                supabase.log_crawling_result(crawler.bank_name, 'success', len(products))
             else:
-                # 실패 로그
-                supabase.log_crawling_result(
-                    bank_name=crawler.bank_name,
-                    status='failed',
-                    crawled_count=0,
-                    error_message='크롤링 결과 없음'
-                )
+                logger.warning(f"⚠️ {crawler.bank_name} 수집된 데이터가 없습니다.")
+                supabase.log_crawling_result(crawler.bank_name, 'failed', 0, 'No data')
         
         except Exception as e:
-            logger.error(f"{crawler.bank_name} 크롤링 중 오류: {e}")
-            supabase.log_crawling_result(
-                bank_name=crawler.bank_name,
-                status='failed',
-                crawled_count=0,
-                error_message=str(e)
-            )
+            logger.error(f"❌ {crawler.bank_name} 작업 중 치명적 오류: {e}")
+            supabase.log_crawling_result(crawler.bank_name, 'failed', 0, str(e))
     
-    # 5. 전체 데이터 전처리
+    # 4. 데이터 정제 및 최종 DB 적재
     if all_products:
-        logger.info(f"\n{'='*60}")
-        logger.info(f"전체 크롤링 결과: {len(all_products)}개 상품")
-        logger.info(f"{'='*60}")
-        
+        logger.info(f"\n{'='*20} 데이터 적재 단계 {'='*20}")
         df = pd.DataFrame(all_products)
         cleaned_df = LoanDataCleaner.validate_and_clean(df)
         
-        # 6. Supabase 적재
-        if len(cleaned_df) > 0:
+        if not cleaned_df.empty:
             products_to_insert = cleaned_df.to_dict('records')
-            success = supabase.insert_loan_products(products_to_insert)
-            
-            if success:
-                logger.info(f"\n✅ 크롤링 완료: 총 {len(products_to_insert)}개 상품 적재")
-                
-                # 적재된 상품 목록 출력
-                for product in products_to_insert:
-                    logger.info(
-                        f"  - {product['bank_name']}: {product['product_name']} "
-                        f"(금리 {product['base_rate']}~{product['base_rate']+product['additional_rate']}%)"
-                    )
+            if supabase.insert_loan_products(products_to_insert):
+                logger.info(f"✅ 총 {len(products_to_insert)}개 상품이 DB에 최종 반영되었습니다.")
             else:
-                logger.error("\n❌ 데이터 적재 실패")
-        else:
-            logger.warning("\n⚠️  전처리 후 유효한 데이터 없음")
+                logger.error("❌ DB 적재 실패")
     
-    else:
-        logger.warning("\n⚠️  크롤링된 데이터 없음")
-    
-    logger.info(f"\n{'='*60}")
-    logger.info("크롤링 프로세스 종료")
-    logger.info(f"종료 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info(f"{'='*60}")
+    logger.info("\n" + "=" * 60)
+    logger.info("🏁 모든 크롤링 프로세스가 종료되었습니다.")
+    logger.info("=" * 60)
 
 if __name__ == "__main__":
     main()
