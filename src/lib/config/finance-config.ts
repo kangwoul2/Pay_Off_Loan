@@ -30,15 +30,19 @@ export class FinanceConfig {
    * 
    * @param loanAmount - 대출 금액 (원)
    * @returns 인지세 (원)
-   */
-  static calculateStampDuty(loanAmount: Big): Big {
-    const amount = loanAmount.toNumber();
+  */
+  static calculateStampDuty(loanAmount: Big | number): Big {
+    // 1. 입력값이 숫자인지 Big인지 확인하고 안전하게 변환
+    const amountNum = loanAmount instanceof Big ? loanAmount.toNumber() : Number(loanAmount);
     
-    if (amount <= 50000000) {
+    // 2. NaN 체크 (비정상적인 값이 들어올 경우 0원 처리)
+    if (isNaN(amountNum)) return Big(0);
+
+    if (amountNum <= 50000000) {
       return Big(0);
-    } else if (amount <= 100000000) {
+    } else if (amountNum <= 100000000) {
       return Big(70000);
-    } else if (amount <= 1000000000) {
+    } else if (amountNum <= 1000000000) {
       return Big(150000);
     } else {
       return Big(350000);

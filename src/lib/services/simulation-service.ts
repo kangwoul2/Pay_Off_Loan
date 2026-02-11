@@ -89,6 +89,7 @@ export interface SimulationResult {
  * 
  * @throws Error - 입력값이 유효하지 않은 경우
  */
+
 export function simulateRefinancing(
   currentDebt: CurrentDebtInfo,
   newLoan: NewLoanProduct,
@@ -96,21 +97,22 @@ export function simulateRefinancing(
 ): SimulationResult {
   
   // ============================================
-  // 0. 입력값 사전 검증 (엣지 케이스 방어)
+  // 0. 입력값 사전 검증 및 안전한 숫자 변환 (중요!)
   // ============================================
-  
+  const safePrincipal = Number(currentDebt.principal) || 0;
+  const safeCurrentRate = Number(currentDebt.interestRate) || 0;
+  const safeRemainingMonths = Number(currentDebt.remainingMonths) || 1;
+  const safeTotalMonths = Number(currentDebt.totalMonths) || 12;
+  const safeFeeRate = Number(currentDebt.earlyRepayFeeRate) || 0;
+  const safeWaiverMonths = Number(currentDebt.feeWaiverMonths) || 0;
+
   // 잔여 기간 검증
-  if (currentDebt.remainingMonths <= 0) {
+  if (safeRemainingMonths <= 0) {
     throw new Error('잔여 상환 기간은 1개월 이상이어야 합니다.');
   }
   
-  // 잔여 기간 > 전체 기간 검증
-  if (currentDebt.remainingMonths > currentDebt.totalMonths) {
-    throw new Error('잔여 기간이 전체 기간보다 클 수 없습니다.');
-  }
-  
   // 대출 원금 검증
-  if (currentDebt.principal <= 0) {
+  if (safePrincipal <= 0) {
     throw new Error('대출 원금은 0원보다 커야 합니다.');
   }
   
@@ -121,100 +123,69 @@ export function simulateRefinancing(
   const newStrategy = RepaymentStrategyFactory.getStrategy(currentDebt.repaymentType);
 
   // ============================================
-  // 2. Big 타입 변환 (정밀 계산을 위해)
+  // 2. Big 타입 변환 (안전하게 변환된 값 사용)
   // ============================================
-  const principal = Big(currentDebt.principal);
-  const currentRate = Big(currentDebt.interestRate);
+  const principal = Big(safePrincipal);
+  const currentRate = Big(safeCurrentRate);
   
-  // 신규 대출 금리 계산: 기본금리 + 가산금리 - 우대금리
-  let newRate = Big(newLoan.baseRate).plus(newLoan.additionalRate);
+  // 신규 금리 계산 시에도 안전하게 변환
+  let newRate = Big(Number(newLoan.baseRate) || 0).plus(Number(newLoan.additionalRate) || 0);
   
-  // 급여이체 우대 적용
   if (hasSalaryTransfer) {
-    newRate = newRate.minus(newLoan.salaryTransferDiscount);
+    newRate = newRate.minus(Number(newLoan.salaryTransferDiscount) || 0);
   }
+  newRate = newRate.minus(Number(newLoan.userOtherDiscount) || 0);
   
-  // 기타 우대금리 적용
-  newRate = newRate.minus(newLoan.userOtherDiscount);
-  
-  // 금리는 0% 이상이어야 함
-  if (newRate.lt(0)) {
-    newRate = Big(0);
-  }
+  if (newRate.lt(0)) newRate = Big(0);
 
   // ============================================
-  // 3. 현재 대출 잔여 이자 계산
+  // 3~5. 이자 및 비용 계산
   // ============================================
   const currentTotalInterest = currentStrategy.calculateTotalInterest(
     principal,
     currentRate,
-    currentDebt.remainingMonths
+    safeRemainingMonths
   );
 
-  // ============================================
-  // 4. 신규 대출 예상 이자 계산
-  // ============================================
   const newTotalInterest = newStrategy.calculateTotalInterest(
     principal,
     newRate,
-    currentDebt.remainingMonths
+    safeRemainingMonths
   );
 
-  // ============================================
-  // 5. 대환 실행 비용 계산
-  // ============================================
-  
-  // 5-1. 중도상환 수수료
   const earlyRepayFee = currentStrategy.calculateEarlyRepayFee(
     principal,
-    Big(currentDebt.earlyRepayFeeRate),
-    currentDebt.remainingMonths,
-    currentDebt.totalMonths,
-    currentDebt.feeWaiverMonths
+    Big(safeFeeRate),
+    safeRemainingMonths,
+    safeTotalMonths,
+    safeWaiverMonths
   );
   
-  // 5-2. 인지세
   const stampDuty = FinanceConfig.calculateStampDuty(principal);
-  
-  // 5-3. 총 대환 비용
   const totalRefinanceCost = earlyRepayFee.plus(stampDuty);
 
   // ============================================
-  // 6. 순이익 계산
+  // 6~7. 이득 및 월 상환액 계산
   // ============================================
   const interestSavings = currentTotalInterest.minus(newTotalInterest);
   const netSavings = interestSavings.minus(totalRefinanceCost);
 
-  // ============================================
-  // 7. 월별 이자 절감액
-  // ============================================
   const currentMonthlyPayment = currentStrategy.calculateMonthlyPayment(
     principal,
     currentRate,
-    currentDebt.remainingMonths
+    safeRemainingMonths
   );
   const newMonthlyPayment = newStrategy.calculateMonthlyPayment(
     principal,
     newRate,
-    currentDebt.remainingMonths
+    safeRemainingMonths
   );
   const monthlySavings = currentMonthlyPayment.minus(newMonthlyPayment);
 
   // ============================================
-  // 8. 손익분기점 (BEP) 계산
-  // 
-  // 금융적 근거:
-  // 손익분기점 = 대환 비용을 월별 절감액으로 회수하는 데 걸리는 시간
-  // 
-  // 계산:
-  // BEP(개월) = 총 대환 비용 / 월별 절감액
-  // 
-  // 의미:
-  // - BEP가 짧을수록 빨리 이득을 볼 수 있음
-  // - BEP가 잔여 기간보다 길면 손해
+  // 8. 손익분기점 (BEP) 계산 (0으로 나누기 방지)
   // ============================================
   let breakEvenMonths = -1;
-  
   if (monthlySavings.gt(0)) {
     const bepMonths = totalRefinanceCost.div(monthlySavings);
     breakEvenMonths = Math.ceil(bepMonths.toNumber());
@@ -222,18 +193,13 @@ export function simulateRefinancing(
 
   // ============================================
   // 9. 추천 액션 결정
-  // 
-  // 결정 로직:
-  // 1. 순이익 > 0 && BEP가 잔여 기간 내 → "즉시_대환"
-  // 2. 중도상환 수수료 > 0 && 수수료 면제까지 3개월 이하 → "수수료_면제_대기"
-  // 3. 그 외 → "현재_유지"
   // ============================================
   let recommendedAction: '즉시_대환' | '수수료_면제_대기' | '현재_유지';
   
-  const elapsedMonths = currentDebt.totalMonths - currentDebt.remainingMonths;
-  const monthsUntilWaiver = currentDebt.feeWaiverMonths - elapsedMonths;
+  const elapsedMonths = safeTotalMonths - safeRemainingMonths;
+  const monthsUntilWaiver = safeWaiverMonths - elapsedMonths;
   
-  if (netSavings.gt(0) && breakEvenMonths > 0 && breakEvenMonths <= currentDebt.remainingMonths) {
+  if (netSavings.gt(0) && breakEvenMonths > 0 && breakEvenMonths <= safeRemainingMonths) {
     recommendedAction = '즉시_대환';
   } else if (earlyRepayFee.gt(0) && monthsUntilWaiver > 0 && monthsUntilWaiver <= 3) {
     recommendedAction = '수수료_면제_대기';
@@ -242,38 +208,23 @@ export function simulateRefinancing(
   }
 
   // ============================================
-  // 10. 결과 반환
+  // 10. 결과 반환 (최종적으로 number로 변환)
   // ============================================
   return {
-    // 전략 실행 전
     totalDebtBefore: principal.plus(currentTotalInterest).toNumber(),
     monthlyPaymentBefore: currentMonthlyPayment.toNumber(),
-    
-    // 전략 실행 후
     totalDebtAfter: principal.plus(newTotalInterest).plus(totalRefinanceCost).toNumber(),
     monthlyPaymentAfter: newMonthlyPayment.toNumber(),
-    
-    // 비용 분석
     earlyRepayFee: earlyRepayFee.toNumber(),
     stampDuty: stampDuty.toNumber(),
     totalRefinanceCost: totalRefinanceCost.toNumber(),
-    
-    // 이득 분석
     interestSavings: interestSavings.toNumber(),
     netSavings: netSavings.toNumber(),
     monthlySavings: monthlySavings.toNumber(),
-    
-    // 손익분기점
     breakEvenMonths,
-    
-    // 추천
     recommendedAction,
-    
-    // 금리 정보
     currentRate: currentRate.toNumber(),
     newRate: newRate.toNumber(),
-    
-    // 신규 상품 정보
     recommendedProduct: {
       bankName: newLoan.bankName,
       productName: newLoan.productName,
@@ -296,20 +247,25 @@ export function findBestRefinancingOption(
   hasSalaryTransfer: boolean
 ): SimulationResult | null {
   
-  if (loanProducts.length === 0) {
-    return null;
-  }
+  if (!loanProducts || loanProducts.length === 0) return null;
   
   let bestResult: SimulationResult | null = null;
-  let maxSavings = Big(-Infinity);
+  let maxSavings = -Infinity; // Big 타입 대신 number로 비교
   
   for (const product of loanProducts) {
-    const result = simulateRefinancing(currentDebt, product, hasSalaryTransfer);
-    const savings = Big(result.netSavings);
-    
-    if (savings.gt(maxSavings)) {
-      maxSavings = savings;
-      bestResult = result;
+    try {
+      const result = simulateRefinancing(currentDebt, product, hasSalaryTransfer);
+      
+      // 결과값이 유효한 숫자인지 체크
+      if (isNaN(result.netSavings)) continue;
+
+      if (result.netSavings > maxSavings) {
+        maxSavings = result.netSavings;
+        bestResult = result;
+      }
+    } catch (e) {
+      console.error("개별 상품 시뮬레이션 중 오류:", e);
+      continue; // 한 상품이 에러 나도 전체가 멈추지 않게 함
     }
   }
   
