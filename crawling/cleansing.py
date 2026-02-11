@@ -73,16 +73,34 @@ class LoanDataCleaner:
     @staticmethod
     def clean_limit(limit_text: str) -> int:
         try:
-            if not limit_text or limit_text.strip() == '': return 0
-            text = limit_text.replace(',', '').replace(' ', '')
+            if not limit_text: return 0
+            
+            # 1. 텍스트 전처리
+            text = str(limit_text).replace(',', '').replace(' ', '')
+            
+            # 2. 숫자(소수점 포함) 추출 로직 강화
+            # (\d+\.?\d*) -> 3.5 같은 형태를 통째로 잡음
+            match_num = re.search(r'(\d+\.?\d*)', text)
+            if not match_num: return 0
+            
+            value = float(match_num.group(1))
+            
+            # 3. 단위 판별 (가장 중요)
             if '억' in text:
-                match = re.search(r'(\d+\.?\d*)억', text)
-                if match: return int(float(match.group(1)) * 100000000)
-            if '만' in text:
-                match = re.search(r'(\d+\.?\d*)만', text)
-                if match: return int(float(match.group(1)) * 10000)
-            nums = re.findall(r'\d+', text)
-            return int(nums[0]) if nums else 0
+                return int(value * 100_000_000)
+            elif '천만' in text:
+                return int(value * 10_000_000)
+            elif '백만' in text:
+                return int(value * 1_000_000)
+            elif '만' in text:
+                return int(value * 10_000)
+                
+            # 단위를 아예 못 가져왔는데 숫자가 너무 작다면(예: 3.5) 억 단위로 추측하는 보정 로직 (선택사항)
+            if value < 1000 and '억' not in text: # 3.5 같은 수치인데 단위가 없다면 억일 확률이 높음
+                # logger.warning(f"단위 미비로 인한 보정 발생: {limit_text}")
+                return int(value * 100_000_000)
+
+            return int(value)
         except:
             return 0
 

@@ -9,7 +9,7 @@ class CrawlingConfig:
     
     # 2. 실측된 obank 주소 반영
     BANK_URLS = {
-        'KB': 'https://obank.kbstar.com/quics?page=C103429',
+        'KB_CREDIT': 'https://obank.kbstar.com/quics?page=C103429', # 신용대출
         'KB_MORTGAGE': 'https://obank.kbstar.com/quics?page=C103557'
     }
     
