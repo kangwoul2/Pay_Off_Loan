@@ -43,10 +43,11 @@ class BaseBankCrawler(ABC):
         chrome_options.add_argument(f'--window-size={self.config.SELENIUM_OPTIONS["window_size"]}')
         chrome_options.add_argument(f'user-agent={self.config.USER_AGENT}')
         
-        service = Service(ChromeDriverManager().install())
-        self.driver = webdriver.Chrome(service=service, options=chrome_options)
-        self.driver.set_page_load_timeout(self.config.PAGE_LOAD_TIMEOUT)
+        # 수정 포인트: Service와 ChromeDriverManager를 사용하지 않고 직접 생성
+        # 이렇게 하면 Selenium Manager가 맥(arm64)에 맞는 드라이버를 자동으로 찾습니다.
+        self.driver = webdriver.Chrome(options=chrome_options)
         
+        self.driver.set_page_load_timeout(self.config.PAGE_LOAD_TIMEOUT)
         logger.info(f"{self.bank_name} 드라이버 설정 완료")
     
     def teardown_driver(self):
