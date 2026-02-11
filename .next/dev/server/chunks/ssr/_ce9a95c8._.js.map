@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": [],
-  "sections": [
-    {"offset": {"line": 4, "column": 0}, "map": {"version":3,"sources":["file:///Users/han-yeongseo/Han/code/2026/Pay_Off_Loan/loan-refinance-simulator/src/app/layout.tsx"],"sourcesContent":["import './globals.css'\n\nexport const metadata = {\n  title: '사회초년생 대환대출 시뮬레이터',\n  description: '금융 IT 대출&빚 상환 솔루션',\n}\n\nexport default function RootLayout({\n  children,\n}: {\n  children: React.ReactNode\n}) {\n  return (\n    <html lang=\"ko\">\n      <body>{children}</body>\n    </html>\n  )\n}"],"names":[],"mappings":";;;;;;;;;AAEO,MAAM,WAAW;IACtB,OAAO;IACP,aAAa;AACf;AAEe,SAAS,WAAW,EACjC,QAAQ,EAGT;IACC,qBACE,8OAAC;QAAK,MAAK;kBACT,cAAA,8OAAC;sBAAM;;;;;;;;;;;AAGb"}},
-    {"offset": {"line": 37, "column": 0}, "map": {"version":3,"sources":["file:///Users/han-yeongseo/Han/code/2026/Pay_Off_Loan/loan-refinance-simulator/node_modules/next/src/server/route-modules/app-page/vendored/rsc/react-jsx-dev-runtime.ts"],"sourcesContent":["module.exports = (\n  require('../../module.compiled') as typeof import('../../module.compiled')\n).vendored['react-rsc']!.ReactJsxDevRuntime\n"],"names":["module","exports","require","vendored","ReactJsxDevRuntime"],"mappings":"AAAAA,OAAOC,OAAO,GACZC,QAAQ,4HACRC,QAAQ,CAAC,YAAY,CAAEC,kBAAkB","ignoreList":[0]}}]
-}
