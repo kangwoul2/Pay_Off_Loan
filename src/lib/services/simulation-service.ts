@@ -89,7 +89,6 @@ export interface SimulationResult {
  * 
  * @throws Error - 입력값이 유효하지 않은 경우
  */
-
 export function simulateRefinancing(
   currentDebt: CurrentDebtInfo,
   newLoan: NewLoanProduct,
@@ -99,12 +98,26 @@ export function simulateRefinancing(
   // ============================================
   // 0. 입력값 사전 검증 및 안전한 숫자 변환 (중요!)
   // ============================================
-  const safePrincipal = Number(currentDebt.principal) || 0;
-  const safeCurrentRate = Number(currentDebt.interestRate) || 0;
-  const safeRemainingMonths = Number(currentDebt.remainingMonths) || 1;
-  const safeTotalMonths = Number(currentDebt.totalMonths) || 12;
-  const safeFeeRate = Number(currentDebt.earlyRepayFeeRate) || 0;
-  const safeWaiverMonths = Number(currentDebt.feeWaiverMonths) || 0;
+  
+  // 안전한 숫자 변환 함수
+  const safeNum = (val: any, defaultVal: number = 0): number => {
+    if (val === null || val === undefined) return defaultVal;
+    const num = Number(val);
+    return isNaN(num) ? defaultVal : num;
+  };
+
+  const safePrincipal = safeNum(currentDebt.principal, 50000000);
+  const safeCurrentRate = safeNum(currentDebt.interestRate, 5.5);
+  const safeRemainingMonths = safeNum(currentDebt.remainingMonths, 36);
+  const safeTotalMonths = safeNum(currentDebt.totalMonths, 60);
+  const safeFeeRate = safeNum(currentDebt.earlyRepayFeeRate, 1.5);
+  const safeWaiverMonths = safeNum(currentDebt.feeWaiverMonths, 36);
+
+  // 신규 대출 금리 안전 변환
+  const safeBaseRate = safeNum(newLoan.baseRate, 3.5);
+  const safeAdditionalRate = safeNum(newLoan.additionalRate, 1.5);
+  const safeSalaryDiscount = safeNum(newLoan.salaryTransferDiscount, 0.3);
+  const safeUserDiscount = safeNum(newLoan.userOtherDiscount, 0);
 
   // 잔여 기간 검증
   if (safeRemainingMonths <= 0) {
@@ -129,12 +142,12 @@ export function simulateRefinancing(
   const currentRate = Big(safeCurrentRate);
   
   // 신규 금리 계산 시에도 안전하게 변환
-  let newRate = Big(Number(newLoan.baseRate) || 0).plus(Number(newLoan.additionalRate) || 0);
+  let newRate = Big(safeBaseRate).plus(safeAdditionalRate);
   
   if (hasSalaryTransfer) {
-    newRate = newRate.minus(Number(newLoan.salaryTransferDiscount) || 0);
+    newRate = newRate.minus(safeSalaryDiscount);
   }
-  newRate = newRate.minus(Number(newLoan.userOtherDiscount) || 0);
+  newRate = newRate.minus(safeUserDiscount);
   
   if (newRate.lt(0)) newRate = Big(0);
 
@@ -247,167 +260,22 @@ export function findBestRefinancingOption(
   hasSalaryTransfer: boolean
 ): SimulationResult | null {
   
-  if (!loanProducts || loanProducts.length === 0) return null;
+  if (loanProducts.length === 0) {
+    return null;
+  }
   
   let bestResult: SimulationResult | null = null;
-  let maxSavings = -Infinity; // Big 타입 대신 number로 비교
+  let maxSavings = Big(-Infinity);
   
   for (const product of loanProducts) {
-    try {
-      const result = simulateRefinancing(currentDebt, product, hasSalaryTransfer);
-      
-      // 결과값이 유효한 숫자인지 체크
-      if (isNaN(result.netSavings)) continue;
-
-      if (result.netSavings > maxSavings) {
-        maxSavings = result.netSavings;
-        bestResult = result;
-      }
-    } catch (e) {
-      console.error("개별 상품 시뮬레이션 중 오류:", e);
-      continue; // 한 상품이 에러 나도 전체가 멈추지 않게 함
+    const result = simulateRefinancing(currentDebt, product, hasSalaryTransfer);
+    const savings = Big(result.netSavings);
+    
+    if (savings.gt(maxSavings)) {
+      maxSavings = savings;
+      bestResult = result;
     }
   }
   
   return bestResult;
-}
-
-export function simulateAllStrategies(
-  currentDebt: CurrentDebtInfo,
-  newLoan: NewLoanProduct,
-  hasSalaryTransfer: boolean
-): {
-  bestStrategy: StrategyComparison;
-  strategies: StrategyComparison[];
-} {
-  const currentStrategy = RepaymentStrategyFactory.getStrategy(
-    currentDebt.repaymentType
-  );
-
-  const principal = Big(currentDebt.principal);
-  const remainingMonths = currentDebt.remainingMonths;
-
-  const currentTotalInterest = currentStrategy.calculateTotalInterest(
-    principal,
-    Big(currentDebt.interestRate),
-    remainingMonths
-  );
-
-  const totalKeep = principal.plus(currentTotalInterest);
-
-  const strategies: StrategyComparison[] = [];
-
-  // =============================
-  // 1️⃣ 현재 유지 전략
-  // =============================
-  strategies.push({
-    strategyType: '현재_유지',
-    totalDebt: totalKeep.toNumber(),
-    refinanceCost: 0,
-    netSavings: 0,
-    breakEvenMonths: -1,
-    monthlySchedule: currentStrategy
-      .getMonthlySchedule(principal, Big(currentDebt.interestRate), remainingMonths)
-      .map(s => ({
-        month: s.month,
-        payment: s.totalPayment.toNumber(),
-      })),
-  });
-
-  // =============================
-  // 2️⃣ 즉시 대환 전략
-  // =============================
-  const immediate = simulateRefinancing(
-    currentDebt,
-    newLoan,
-    hasSalaryTransfer
-  );
-
-  strategies.push({
-    strategyType: '즉시_대환',
-    totalDebt: immediate.totalDebtAfter,
-    refinanceCost: immediate.totalRefinanceCost,
-    netSavings: totalKeep.minus(Big(immediate.totalDebtAfter)).toNumber(),
-    breakEvenMonths: immediate.breakEvenMonths,
-    monthlySchedule:
-      RepaymentStrategyFactory
-        .getStrategy(currentDebt.repaymentType)
-        .getMonthlySchedule(
-          principal,
-          Big(immediate.newRate),
-          remainingMonths
-        )
-        .map(s => ({
-          month: s.month,
-          payment: s.totalPayment.toNumber(),
-        })),
-  });
-
-  // =============================
-  // 3️⃣ 수수료 면제 대기 전략
-  // =============================
-
-  const elapsed = currentDebt.totalMonths - remainingMonths;
-  const monthsUntilWaiver =
-    currentDebt.feeWaiverMonths - elapsed;
-
-  if (monthsUntilWaiver > 0 && monthsUntilWaiver < remainingMonths) {
-    const partialSchedule =
-      currentStrategy.getMonthlySchedule(
-        principal,
-        Big(currentDebt.interestRate),
-        monthsUntilWaiver
-      );
-
-    const remainingPrincipal =
-      partialSchedule[partialSchedule.length - 1].remainingPrincipal;
-
-    const newRate = Big(newLoan.baseRate)
-      .plus(newLoan.additionalRate)
-      .minus(hasSalaryTransfer ? newLoan.salaryTransferDiscount : 0)
-      .minus(newLoan.userOtherDiscount);
-
-    const newStrategy =
-      RepaymentStrategyFactory.getStrategy(currentDebt.repaymentType);
-
-    const remainingNewInterest =
-      newStrategy.calculateTotalInterest(
-        remainingPrincipal,
-        newRate,
-        remainingMonths - monthsUntilWaiver
-      );
-
-    const totalDebt =
-      principal
-        .plus(
-          currentStrategy.calculateTotalInterest(
-            principal,
-            Big(currentDebt.interestRate),
-            monthsUntilWaiver
-          )
-        )
-        .plus(remainingNewInterest);
-
-    strategies.push({
-      strategyType: '수수료_면제_대기',
-      totalDebt: totalDebt.toNumber(),
-      refinanceCost: 0,
-      netSavings: totalKeep.minus(totalDebt).toNumber(),
-      breakEvenMonths: -1,
-      monthlySchedule: [], // (차트용으로 합쳐서 만들 수도 있음)
-    });
-  }
-
-  // =============================
-  // 최적 전략 선택
-  // =============================
-
-  const best = strategies.reduce((a, b) =>
-    a.netSavings > b.netSavings ? a : b
-  );
-
-  return {
-    bestStrategy: best,
-    strategies,
-  };
 }
