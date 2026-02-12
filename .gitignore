@@ -43,3 +43,19 @@ cache/
 # OS
 Thumbs.db
 .DS_Store
+node_modules/
+.next/
+out/
+build/
+.tsbuildinfo
+next-env.d.ts
+
+# --- Package Manager ---
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# --- Supabase & Local DB (보고서 관련) ---
+.data/
+supabase/.temp/
