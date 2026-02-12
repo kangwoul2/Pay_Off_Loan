@@ -271,3 +271,143 @@ export function findBestRefinancingOption(
   
   return bestResult;
 }
+
+export function simulateAllStrategies(
+  currentDebt: CurrentDebtInfo,
+  newLoan: NewLoanProduct,
+  hasSalaryTransfer: boolean
+): {
+  bestStrategy: StrategyComparison;
+  strategies: StrategyComparison[];
+} {
+  const currentStrategy = RepaymentStrategyFactory.getStrategy(
+    currentDebt.repaymentType
+  );
+
+  const principal = Big(currentDebt.principal);
+  const remainingMonths = currentDebt.remainingMonths;
+
+  const currentTotalInterest = currentStrategy.calculateTotalInterest(
+    principal,
+    Big(currentDebt.interestRate),
+    remainingMonths
+  );
+
+  const totalKeep = principal.plus(currentTotalInterest);
+
+  const strategies: StrategyComparison[] = [];
+
+  // =============================
+  // 1️⃣ 현재 유지 전략
+  // =============================
+  strategies.push({
+    strategyType: '현재_유지',
+    totalDebt: totalKeep.toNumber(),
+    refinanceCost: 0,
+    netSavings: 0,
+    breakEvenMonths: -1,
+    monthlySchedule: currentStrategy
+      .getMonthlySchedule(principal, Big(currentDebt.interestRate), remainingMonths)
+      .map(s => ({
+        month: s.month,
+        payment: s.totalPayment.toNumber(),
+      })),
+  });
+
+  // =============================
+  // 2️⃣ 즉시 대환 전략
+  // =============================
+  const immediate = simulateRefinancing(
+    currentDebt,
+    newLoan,
+    hasSalaryTransfer
+  );
+
+  strategies.push({
+    strategyType: '즉시_대환',
+    totalDebt: immediate.totalDebtAfter,
+    refinanceCost: immediate.totalRefinanceCost,
+    netSavings: totalKeep.minus(Big(immediate.totalDebtAfter)).toNumber(),
+    breakEvenMonths: immediate.breakEvenMonths,
+    monthlySchedule:
+      RepaymentStrategyFactory
+        .getStrategy(currentDebt.repaymentType)
+        .getMonthlySchedule(
+          principal,
+          Big(immediate.newRate),
+          remainingMonths
+        )
+        .map(s => ({
+          month: s.month,
+          payment: s.totalPayment.toNumber(),
+        })),
+  });
+
+  // =============================
+  // 3️⃣ 수수료 면제 대기 전략
+  // =============================
+
+  const elapsed = currentDebt.totalMonths - remainingMonths;
+  const monthsUntilWaiver =
+    currentDebt.feeWaiverMonths - elapsed;
+
+  if (monthsUntilWaiver > 0 && monthsUntilWaiver < remainingMonths) {
+    const partialSchedule =
+      currentStrategy.getMonthlySchedule(
+        principal,
+        Big(currentDebt.interestRate),
+        monthsUntilWaiver
+      );
+
+    const remainingPrincipal =
+      partialSchedule[partialSchedule.length - 1].remainingPrincipal;
+
+    const newRate = Big(newLoan.baseRate)
+      .plus(newLoan.additionalRate)
+      .minus(hasSalaryTransfer ? newLoan.salaryTransferDiscount : 0)
+      .minus(newLoan.userOtherDiscount);
+
+    const newStrategy =
+      RepaymentStrategyFactory.getStrategy(currentDebt.repaymentType);
+
+    const remainingNewInterest =
+      newStrategy.calculateTotalInterest(
+        remainingPrincipal,
+        newRate,
+        remainingMonths - monthsUntilWaiver
+      );
+
+    const totalDebt =
+      principal
+        .plus(
+          currentStrategy.calculateTotalInterest(
+            principal,
+            Big(currentDebt.interestRate),
+            monthsUntilWaiver
+          )
+        )
+        .plus(remainingNewInterest);
+
+    strategies.push({
+      strategyType: '수수료_면제_대기',
+      totalDebt: totalDebt.toNumber(),
+      refinanceCost: 0,
+      netSavings: totalKeep.minus(totalDebt).toNumber(),
+      breakEvenMonths: -1,
+      monthlySchedule: [], // (차트용으로 합쳐서 만들 수도 있음)
+    });
+  }
+
+  // =============================
+  // 최적 전략 선택
+  // =============================
+
+  const best = strategies.reduce((a, b) =>
+    a.netSavings > b.netSavings ? a : b
+  );
+
+  return {
+    bestStrategy: best,
+    strategies,
+  };
+}

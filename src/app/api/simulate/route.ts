@@ -1,120 +1,187 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-import { 
-  findBestRefinancingOption, 
-} from '@/lib/services/simulation-service';
-import { FinanceConfig } from '@/lib/config/finance-config';
-import Big from 'big.js';
+import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import Big from "big.js";
+
+function calculateMonthlyPayment(
+  principal: number,
+  annualRate: number,
+  months: number
+) {
+  if (annualRate === 0) return principal / months;
+
+  const monthlyRate = annualRate / 100 / 12;
+
+  return (
+    (principal * monthlyRate * Math.pow(1 + monthlyRate, months)) /
+    (Math.pow(1 + monthlyRate, months) - 1)
+  );
+}
+
+// ✅ 경과 개월 계산
+function calculateElapsedMonths(startDate: string) {
+  const start = new Date(startDate);
+  const now = new Date();
+
+  const years = now.getFullYear() - start.getFullYear();
+  const months = now.getMonth() - start.getMonth();
+
+  return years * 12 + months;
+}
 
 export async function POST(request: NextRequest) {
   try {
-    // 1. 환경 변수 및 클라이언트 설정
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-    const supabase = createClient(supabaseUrl, supabaseKey);
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    );
 
     const body = await request.json();
     const { currentDebts, hasSalaryTransfer } = body;
 
-    // 2. DB에서 상품 정보 가져오기
-    const { data: dbProducts, error } = await supabase
-      .from('loan_products')
-      .select('*');
-
-    if (error) {
-      console.error('DB Fetch Error:', error);
-      return NextResponse.json({ success: false, error: 'DB 조회 실패' }, { status: 500 });
+    if (!currentDebts || !Array.isArray(currentDebts)) {
+      return NextResponse.json(
+        { success: false, error: "currentDebts 형식 오류" },
+        { status: 400 }
+      );
     }
 
-    const formattedProducts = dbProducts?.map(p => ({
-      bankName: p.bank_name,
-      productName: p.product_name,
-      baseRate: Number(p.base_rate) || 0,
-      additionalRate: Number(p.additional_rate) || 0,
-      salaryTransferDiscount: Number(p.salary_discount) || 0,
-      userOtherDiscount: 0,
-    })) || [];
+    const { data: dbProducts, error } = await supabase
+      .from("loan_products")
+      .select("*");
 
-    // 3. 최적 상품 분석 및 시계열 데이터 생성
-    const results = currentDebts.map((debt: any) => {
-      const bestOption = findBestRefinancingOption(
-        debt, 
-        formattedProducts, 
-        hasSalaryTransfer
+    if (error || !dbProducts) {
+      return NextResponse.json(
+        { success: false, error: "DB 조회 실패" },
+        { status: 500 }
       );
+    }
 
-      // 인지세 계산 (총액의 50% 고객 부담)
-      const stampDuty = FinanceConfig.calculateStampDuty(new Big(debt.principal || 0))
-        .div(2)
-        .toNumber();
-      
-      const earlyRepayFee = Number(bestOption.earlyRepayFee) || 0;
-      const totalInitialCost = earlyRepayFee + stampDuty;
-      
-      const chartData = [];
-      const months = Number(debt.remainingMonths) || 1;
-      
-      // 월별 원리금 상환액 산출 (이해하기 쉽게 평균값 기반 모델링)
-      // 실제 원리금균등 로직이 service에 있으나, 차트 시각화를 위해 월평균 지출액으로 정규화
-      const currentMonthlyPayment = (Number(bestOption.currentTotalInterest) + Number(debt.principal)) / months;
-      const newMonthlyPayment = (Number(bestOption.newTotalInterest) + Number(debt.principal)) / months;
+    const debt = currentDebts[0];
 
-      let cumulativeCurrent = 0;
-      let cumulativeNew = totalInitialCost; 
+    const principal = Number(debt.principal);
+    const totalMonths = Number(debt.totalMonths);
+    const currentRate = Number(debt.interestRate);
 
-      const simulationLimit = Math.min(months, 60);
+    const elapsedMonths = calculateElapsedMonths(debt.startDate);
+    const remainingMonths = totalMonths - elapsedMonths;
 
-      for (let m = 1; m <= simulationLimit; m++) {
-        // 1. 누적 비용 합산 (이자 및 수수료)
-        const currentMonthlyInterest = (Number(bestOption.currentTotalInterest) || 0) / months;
-        const newMonthlyInterest = (Number(bestOption.newTotalInterest) || 0) / months;
-        
-        cumulativeCurrent += currentMonthlyInterest;
-        cumulativeNew += newMonthlyInterest;
-        
-        // 2. 월별 실제 지출액 (원금 + 이자 + 초기비용)
-        // 대환 후 1회차(m=1)에는 수수료와 인지세가 포함되어 지출이 튀는 것을 시각화
-        const monthlyOutflowCurrent = currentMonthlyPayment;
-        const monthlyOutflowNew = m === 1 
-          ? newMonthlyPayment + totalInitialCost 
-          : newMonthlyPayment;
+    if (remainingMonths <= 0) {
+      return NextResponse.json(
+        { success: false, error: "이미 상환 완료된 대출입니다." },
+        { status: 400 }
+      );
+    }
 
-        chartData.push({
-          month: `${m}개월`,
-          // BEP 분석용 누적 이자 데이터
-          현재유지: Math.round(cumulativeCurrent),
-          전략실행: Math.round(cumulativeNew),
-          // 현금흐름 분석용 월별 지출 데이터
-          기존월지출: Math.round(monthlyOutflowCurrent),
-          전략월지출: Math.round(monthlyOutflowNew)
-        });
-      }
-
-      return {
-        loanName: debt.name || '보유 대출',
-        principal: Number(debt.principal) || 0,
-        currentRate: Number(debt.interestRate) || 0,
-        newRate: Number(bestOption.newRate) || 0,
-        monthlySavings: Number(bestOption.monthlySavings) || 0,
-        netSavings: Number(bestOption.netSavings) - stampDuty,
-        earlyRepayFee: earlyRepayFee,
-        stampDuty: stampDuty,
-        totalInitialCost: totalInitialCost,
-        currentTotalInterest: Number(bestOption.currentTotalInterest) || 0,
-        newTotalInterest: Number(bestOption.newTotalInterest) || 0,
-        recommendedProduct: bestOption.recommendedProduct,
-        recommendedAction: bestOption.recommendedAction,
-        chartData: chartData // 이제 이 안에 월별 지출 데이터가 포함됨
-      };
+    // ✅ 조건 맞는 상품 필터
+    const eligibleProducts = dbProducts.filter((p) => {
+      return (
+        principal <= Number(p.max_loan_limit) &&
+        remainingMonths >= Number(p.min_term_months) &&
+        remainingMonths <= Number(p.max_term_months)
+      );
     });
 
-    return NextResponse.json({ success: true, data: results });
+    if (eligibleProducts.length === 0) {
+      return NextResponse.json(
+        { success: false, error: "조건에 맞는 상품 없음" },
+        { status: 400 }
+      );
+    }
+
+    // ✅ 최종 금리 계산
+    const productsWithRate = eligibleProducts.map((p) => {
+      const rate =
+        Number(p.base_rate) +
+        Number(p.additional_rate) -
+        (hasSalaryTransfer ? Number(p.salary_discount) : 0);
+
+      return { ...p, finalRate: rate };
+    });
+
+    const bestProduct = productsWithRate.sort(
+      (a, b) => a.finalRate - b.finalRate
+    )[0];
+
+    const newRate = bestProduct.finalRate;
+
+    const currentMonthly = calculateMonthlyPayment(
+      principal,
+      currentRate,
+      remainingMonths
+    );
+
+    const newMonthly = calculateMonthlyPayment(
+      principal,
+      newRate,
+      remainingMonths
+    );
+
+    // ✅ 초기 비용 계산
+    let earlyRepayFee = 0;
+
+    if (elapsedMonths < debt.feeWaiverMonths) {
+      earlyRepayFee =
+        (principal * debt.earlyRepayFeeRate) / 100;
+    }
+
+    const stampDuty = new Big(principal)
+      .times(0.0002)
+      .div(2)
+      .toNumber();
+
+    const totalInitialCost = earlyRepayFee + stampDuty;
+
+    const totalDebtBefore = Math.round(currentMonthly * remainingMonths);
+    const totalDebtAfter = Math.round(
+      newMonthly * remainingMonths + totalInitialCost
+    );
+
+    const netSavings = totalDebtBefore - totalDebtAfter;
+
+    // ✅ 손익분기 계산
+    let cumulativeDiff = -totalInitialCost;
+    let breakEvenMonths = 0;
+
+    for (let i = 1; i <= remainingMonths; i++) {
+      cumulativeDiff += currentMonthly - newMonthly;
+      if (cumulativeDiff >= 0) {
+        breakEvenMonths = i;
+        break;
+      }
+    }
+
+    // ✅ 📈 그래프 데이터 생성
+    const chartData = [];
+    let cumulativeBefore = 0;
+    let cumulativeAfter = totalInitialCost;
+
+    for (let i = 1; i <= remainingMonths; i++) {
+      cumulativeBefore += currentMonthly;
+      cumulativeAfter += newMonthly;
+
+      chartData.push({
+        month: `${i}개월`,
+        현재유지: Math.round(cumulativeBefore),
+        전략실행: Math.round(cumulativeAfter),
+      });
+    }
+
+    return NextResponse.json({
+      success: true,
+      totalDebtBefore,
+      totalDebtAfter,
+      netSavings,
+      breakEvenMonths,
+      recommendedProduct: `${bestProduct.bank_name} ${bestProduct.product_name}`,
+      newRate,
+      remainingMonths,
+      chartData, // 👈 추가됨
+    });
 
   } catch (error) {
-    console.error('Simulation API Error:', error);
-    return NextResponse.json({ 
-      success: false, 
-      error: error instanceof Error ? error.message : '알 수 없는 오류가 발생했습니다.' 
-    }, { status: 500 });
+    return NextResponse.json(
+      { success: false, error: "서버 오류" },
+      { status: 500 }
+    );
   }
 }
