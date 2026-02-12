@@ -9,7 +9,8 @@
     "start": "next start",
     "lint": "next lint",
     "crawl": "cd .. && python -m crawling.main",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "test:validation": "tsx src/tests/test-runner.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.7",
