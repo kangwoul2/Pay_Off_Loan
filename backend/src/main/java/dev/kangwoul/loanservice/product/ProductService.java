@@ -1,13 +1,14 @@
 package dev.kangwoul.loanservice.product;
 
 import jakarta.persistence.EntityNotFoundException;
+import jakarta.persistence.OptimisticLockException;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
 import java.util.List;
+import java.util.Objects;
 
 @Service
 public class ProductService {
@@ -45,9 +46,14 @@ public class ProductService {
 
     @Transactional
     @CacheEvict(cacheNames = "loan-product-list", allEntries = true)
-    public ProductResponse changeRate(Long id, BigDecimal newRate) {
+    public ProductResponse changeRate(Long id, ProductRateUpdateRequest request) {
         LoanProduct product = products.findById(id).orElseThrow(EntityNotFoundException::new);
-        product.changeRate(newRate);
-        return ProductResponse.from(product);
+        if (!Objects.equals(product.getVersion(), request.expectedVersion())) {
+            throw new OptimisticLockException(
+                    "stale product version: expected=" + request.expectedVersion() + ", actual=" + product.getVersion());
+        }
+        product.changeRate(request.value());
+        LoanProduct saved = products.saveAndFlush(product);
+        return ProductResponse.from(saved);
     }
 }
